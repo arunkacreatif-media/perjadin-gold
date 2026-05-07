@@ -41,7 +41,7 @@ async function startServer() {
   }
 
   const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || process.env.VITE_GOOGLE_SPREADSHEET_ID;
-  const scriptUrl = process.env.GOOGLE_SCRIPT_URL || process.env.VITE_GOOGLE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbwgxPFqnUT0Ji688rYr_-GtwuOPpk-w8NwvJlfjy0CC-FXuW639U64fC0HcvEmT6on_Kg/exec';
+  const scriptUrl = process.env.GOOGLE_SCRIPT_URL || process.env.VITE_GOOGLE_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbwgxPFqnUT0Ji688rYr_-GtwUOPpk-w8NwvJlfjy0CC-FXuW639U64fC0HcvEmT6on_Kg/exec';
 
   // Debug info for user (safe version)
   if (process.env.NODE_ENV === 'production' || process.env.VERCEL) {
@@ -524,21 +524,7 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  // Export for Vercel or listen locally
-  if (process.env.VERCEL) {
-    return app;
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-  });
-  
   return app;
-}
-
-// Handle local execution
-if (!process.env.VERCEL) {
-  startServer();
 }
 
 // Initialized app instance for Vercel
@@ -549,4 +535,13 @@ export default async function handler(req: any, res: any) {
     appInstance = await startServer();
   }
   return appInstance(req, res);
+}
+
+// Handle local execution
+if (!process.env.VERCEL && import.meta.url === `file://${process.argv[1]}`) {
+  startServer().then(app => {
+    app.listen(3000, '0.0.0.0', () => {
+      console.log(`Server running at http://localhost:3000`);
+    });
+  });
 }
