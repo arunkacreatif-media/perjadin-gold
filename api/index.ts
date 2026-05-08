@@ -1,16 +1,20 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import cors from 'cors';
-import multer from 'multer';
-import { google } from 'googleapis';
 import { GoogleSpreadsheet } from 'google-spreadsheet';
 import { JWT } from 'google-auth-library';
 import dotenv from 'dotenv';
-import { Readable } from 'stream';
 
 dotenv.config();
+
+// Standard Node error logging for serverless debugging
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -28,28 +32,41 @@ let googleKeyRaw = process.env.GOOGLE_PRIVATE_KEY || process.env.VITE_GOOGLE_PRI
 
 let googleKey = '';
 if (googleKeyRaw) {
-  googleKey = googleKeyRaw.trim()
-    .replace(/^['"]+|['"]+$/g, '') 
-    .replace(/\\n/g, '\n')         
-    .replace(/\s+/g, (match) => match.includes('\n') ? '\n' : match);
+  try {
+    googleKey = googleKeyRaw.trim()
+      .replace(/^['"]+|['"]+$/g, '') 
+      .replace(/\\n/g, '\n')         
+      .replace(/\s+/g, (match) => match.includes('\n') ? '\n' : match);
 
-  if (!googleKey.includes('-----BEGIN PRIVATE KEY-----')) {
-    googleKey = `-----BEGIN PRIVATE KEY-----\n${googleKey}\n-----END PRIVATE KEY-----`;
+    if (!googleKey.includes('-----BEGIN PRIVATE KEY-----')) {
+      googleKey = `-----BEGIN PRIVATE KEY-----\n${googleKey}\n-----END PRIVATE KEY-----`;
+    }
+  } catch (err) {
+    console.error('Error parsing GOOGLE_PRIVATE_KEY:', err);
   }
 }
 
 const spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || process.env.VITE_GOOGLE_SPREADSHEET_ID;
 const scriptUrl = 'https://script.google.com/macros/s/AKfycbwgxPFqnUT0Ji688rYr_-GtwUOPpk-w8NwvJlfjy0CC-FXuW639U64fC0HcvEmT6on_Kg/exec';
 
-const auth = new JWT({
-  email: googleEmail || 'missing@service.account',
-  key: googleKey,
-  scopes: [
-    'https://www.googleapis.com/auth/spreadsheets',
-    'https://www.googleapis.com/auth/drive',
-    'https://www.googleapis.com/auth/documents',
-  ],
-});
+let auth: JWT;
+try {
+  auth = new JWT({
+    email: googleEmail || 'missing@service.account',
+    key: googleKey || undefined,
+    scopes: [
+      'https://www.googleapis.com/auth/spreadsheets',
+      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/documents',
+    ],
+  });
+} catch (err) {
+  console.error('Error initializing JWT Auth:', err);
+  // Fallback to avoid crash on startup
+  auth = {
+    authorize: async () => { throw new Error('Auth not configured'); },
+  } as any;
+}
 
 // --- HELPERS ---
 const callBridge = async (req: express.Request, funcName: string, args: any[] = []) => {
@@ -84,6 +101,7 @@ const api = express.Router();
 api.get('/status', (req, res) => {
   res.json({
     status: 'ok',
+    environment: process.env.NODE_ENV,
     isVercel: !!process.env.VERCEL,
     google: {
       email: !!googleEmail,
@@ -96,9 +114,9 @@ api.get('/status', (req, res) => {
 api.post('/tenant/verify', async (req, res) => {
   try {
     const { villageId } = req.body;
+    console.log('[LOGIN] Verify attempt for village:', villageId);
+    
     if (!villageId) return res.status(400).json({ error: 'ID Desa diperlukan' });
-
-    console.log(`[VERIFY] Village: ${villageId}`);
     
     let villageData;
     // 1. Try Bridge
@@ -201,17 +219,37 @@ api.get('/dashboard/stats', async (req, res) => {
   }
 });
 
-// Apply the router to both /api and root as fallback
+// Apply the router ONLY to /api
 app.use('/api', api);
-app.use('/', api);
 
-// Serve local frontend ONLY when NOT on Vercel
-if (!process.env.VERCEL && process.env.NODE_ENV !== 'production') {
-  const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'spa',
+// Serve static files in production/Vercel
+if (process.env.VERCEL || process.env.NODE_ENV === 'production') {
+  const distPath = path.join(process.cwd(), 'dist');
+  app.use(express.static(distPath));
+  // Fallback support for SPA
+  app.get('*', (req, res) => {
+    // Only serve index.html if it's not an API call
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(distPath, 'index.html'));
+    } else {
+      res.status(404).json({ error: 'API route not found' });
+    }
   });
-  app.use(vite.middlewares);
+}
+// Handle Vite in dev mode (Local)
+else {
+  (async () => {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch (e) {
+      console.error('Vite failed to load:', e);
+    }
+  })();
 }
 
 // Support local execution
